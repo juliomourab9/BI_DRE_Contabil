@@ -1,0 +1,87 @@
+-- Query de lançamentos contábeis
+-- Seleciona dados financeiros consolidados por conta contábil
+SELECT 
+  DATA_RMS, -- Data de referência no formato AAAAMMDD (sempre com '01' como dia)
+  
+  -- Conversão do código da conta contábil em número, removendo espaços
+  TO_NUMBER(TRIM(TB.CTA_CTA)) AS ID_CONTA,
+  TO_NUMBER(TRIM(TB.CTA_CTA)) AS ID_SUBNIVEL, -- Repetição da conta como identificador de subnível
+
+  TB.SALDO_INICIAL,     -- Saldo inicial da conta no mês
+  TB.DEBMENSAL,         -- Débitos do mês
+  TB.CREDMENSAL,        -- Créditos do mês
+  TB.DEBMENSAL_APU,     -- Débitos apurados no mês
+  TB.CREDMENSAL_APU,    -- Créditos apurados no mês
+  TB.DEBMENSAL_ACU,     -- Débitos acumulados no ano
+  TB.CREDMENSAL_ACU,    -- Créditos acumulados no ano
+
+  -- Cálculo do saldo do mês (Débito - Crédito), truncado para duas casas decimais
+  TRUNC((TB.DEBMENSAL - TB.CREDMENSAL), 2) AS SALDO,
+
+  -- Cálculo do saldo final considerando a natureza da conta:
+  -- Se a conta começa com '1' (ativo), o comportamento de débito e crédito é diferente
+  CASE
+    WHEN substr(TB.CTA_CTA,1,1) = 1 THEN
+      CASE 
+        WHEN TB.DEBMENSAL > TB.CREDMENSAL THEN (TB.SALDO_INICIAL + (TB.DEBMENSAL - TB.CREDMENSAL))
+        ELSE (TB.SALDO_INICIAL - (TB.DEBMENSAL - TB.CREDMENSAL)) 
+      END
+    ELSE
+      CASE 
+        WHEN TB.DEBMENSAL < TB.CREDMENSAL THEN (TB.SALDO_INICIAL - (TB.DEBMENSAL - TB.CREDMENSAL))  
+        ELSE (TB.SALDO_INICIAL + (TB.DEBMENSAL - TB.CREDMENSAL)) 
+      END
+  END AS SALDO_FINAL
+
+-- Subconsulta que consolida os dados de saldo por conta e mês
+FROM (
+  SELECT 
+    -- Montagem da data no formato AAAAMMDD com '01' como dia fixo
+    TO_NUMBER(C.CTA_ANO || LPAD(G.SLD_EMP_MES, 2, 0) || '01') AS DATA_RMS,
+
+    -- Extração de campos principais da conta contábil (usando MAX para manter uma única linha por grupo)
+    MAX(C.CTA_RED)        CTA_RED,
+    MAX(C.CTA_GRA)        CTA_GRA,
+    MAX(C.CTA_TIP)        CTA_TIP,
+    MAX(C.CTA_CTA)        CTA_CTA,
+    MAX(C.CTA_SLD_DET)    CTA_SLD_DET,
+    MAX(C.CTA_SLD_FIL)    CTA_SLD_FIL,
+    MAX(C.CTA_DIA_HST)    CTA_DIA_HST,
+    MAX(C.CTA_DIA_AUX)    CTA_DIA_AUX,
+    MAX(C.CTA_DIA_NUM)    CTA_DIA_NUM,
+
+    G.SLD_EMP_INI         SALDO_INICIAL,         -- Saldo inicial do mês da conta
+
+    -- Somatórios de movimentações
+    SUM(G.SLD_EMP_DEB)    DEBMENSAL,             -- Total de débitos no mês
+    SUM(G.SLD_EMP_CRE)    CREDMENSAL,            -- Total de créditos no mês
+    SUM(G.SLD_EMP_DEB_APU) DEBMENSAL_APU,        -- Débitos apurados no mês
+    SUM(G.SLD_EMP_CRE_APU) CREDMENSAL_APU,       -- Créditos apurados no mês
+    SUM(G.SLD_EMP_DEB_ACU) DEBMENSAL_ACU,        -- Débitos acumulados no ano
+    SUM(G.SLD_EMP_CRE_ACU) CREDMENSAL_ACU        -- Créditos acumulados no ano
+
+  -- Tabelas de origem
+  FROM AA3CTBPC C,         -- Tabela de contas contábeis
+       AA3CTBSE G          -- Tabela de saldos por empresa
+
+  -- Junção entre saldos e contas baseada na conta e ano
+  WHERE G.SLD_EMP_CTA(+) = C.CTA_CTA
+    AND G.SLD_EMP_ANO(+) = C.CTA_ANO
+
+    -- Filtra para contas do grau 6 (nível de detalhe)
+    AND C.CTA_GRA = 6
+
+    -- Garante que haja valores de crédito e débito informados
+    AND G.SLD_EMP_CRE IS NOT NULL
+    AND G.SLD_EMP_DEB IS NOT NULL
+
+  -- Agrupa pelos campos identificadores
+  GROUP BY 
+    C.CTA_CTA,
+    C.CTA_ANO,
+    G.SLD_EMP_MES,
+    G.SLD_EMP_INI
+
+  -- Ordena pela conta contábil
+  ORDER BY C.CTA_CTA
+) TB
